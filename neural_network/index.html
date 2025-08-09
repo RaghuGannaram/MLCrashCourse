@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>NN Live Viewer</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+            :root {
+                --bg: #ffffff;
+                --fg: #0b0d10;
+                --muted: #7d8aa3;
+                --edge: #9fb0c3;
+                --node-stroke: #6a90d6;
+                --badge-bg: #eef5ff;
+                --badge-stroke: #c9dcff;
+                --warn: #b54708;
+                --ok: #2b825b;
+                --err: #b42318;
+            }
+            html,
+            body {
+                height: 100%;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--fg);
+                font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+                overflow: hidden;
+            }
+
+            .edge {
+                stroke: var(--edge);
+                stroke-opacity: 0.9;
+            }
+            .node {
+                fill: #d5e3ff;
+                stroke: var(--node-stroke);
+                stroke-width: 1.5;
+            }
+            .nodeText {
+                fill: var(--fg);
+                font-size: 11px;
+                text-anchor: middle;
+                dominant-baseline: middle;
+                pointer-events: none;
+            }
+            .layerLabel {
+                fill: #2b3a55;
+                opacity: 0.6;
+                font-size: 12px;
+                font-weight: 600;
+                text-anchor: middle;
+            }
+            .biasText {
+                fill: #6b7a90;
+                font-size: 10px;
+                text-anchor: middle;
+            }
+
+            .control-container {
+                margin: 20px;
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                pointer-events: none;
+            }
+            .control-container .group {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .chip {
+                pointer-events: auto;
+                user-select: none;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 10px;
+                border-radius: 999px;
+                background: var(--badge-bg);
+                border: 1px solid var(--badge-stroke);
+                font-size: 12px;
+            }
+            .chip button {
+                all: unset;
+                cursor: pointer;
+                padding: 0 6px;
+                border-radius: 8px;
+            }
+            .chip .sep {
+                width: 1px;
+                align-self: stretch;
+                background: var(--badge-stroke);
+                margin: 0 4px;
+            }
+            .status.ok {
+                color: var(--ok);
+            }
+            .status.warn {
+                color: var(--warn);
+            }
+            .status.err {
+                color: var(--err);
+            }
+
+            .canvas-container {
+                padding: 40px 20px;
+                margin: auto;
+            }
+
+            .legend-container {
+                position: fixed;
+                bottom: 10px;
+                right: 10px;
+                z-index: 10;
+                background: rgba(255, 255, 255, 0.85);
+                border: 1px solid var(--badge-stroke);
+                border-radius: 10px;
+                padding: 10px 12px;
+                font-size: 12px;
+                backdrop-filter: blur(4px);
+            }
+            .legend-container h4 {
+                margin: 0 0 6px 0;
+                font-size: 12px;
+                font-weight: 700;
+                color: #243b66;
+            }
+            .legend-container ul {
+                list-style: none;
+                padding: 0;
+                margin: 0;
+            }
+            .legend-container li {
+                margin: 4px 0;
+            }
+
+            .empty-container {
+                position: fixed;
+                inset: 0;
+                display: grid;
+                place-items: center;
+                color: #2b3a55;
+                opacity: 0.7;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Controls -->
+        <div class="control-container" aria-live="polite">
+            <div class="group">
+                <div class="chip" id="modeChip" title="Switch between Values and Gradients view">
+                    <strong>Mode</strong>
+                    <span class="sep"></span>
+                    <button id="modeValues">Values</button>
+                    <button id="modeGrads">Gradients</button>
+                </div>
+                <div class="chip" id="stepChip">
+                    <strong>Step</strong><span class="sep"></span><span id="stepVal">—</span>
+                </div>
+                <div class="chip" id="pollChip" title="Polling interval">
+                    <strong>Poll</strong><span class="sep"></span><span id="pollVal">500ms</span>
+                </div>
+                <div class="chip" id="pauseChip">
+                    <button id="pauseBtn" title="Pause/Resume polling">⏸ Pause</button>
+                </div>
+            </div>
+            <div class="group" style="margin-left: auto">
+                <div class="chip status ok" id="status">● Connected</div>
+            </div>
+        </div>
+
+        <!-- Canvas -->
+        <div class="canvas-container">
+            <svg
+                id="svg"
+                viewBox="0 0 1200 700"
+                preserveAspectRatio="xMidYMid meet"
+                role="img"
+                aria-label="Neural network live viewer"
+            ></svg>
+        </div>
+
+        <!-- Empty state -->
+        <!-- <div class="empty-container" id="empty">Waiting for snapshot…</div> -->
+
+        <!-- Legend -->
+        <div class="legend-container" id="legend">
+            <h4>Legend</h4>
+            <ul>
+                <li><strong>Node color</strong>: activation (blue −, white 0, red +)</li>
+                <li><strong>Outer ring</strong>: |bias| thickness, dashed if bias &lt; 0</li>
+                <li><strong>Edge width</strong>: |weight|; dashed if weight &lt; 0</li>
+                <li><em>Gradients mode</em>: same encodings but for dW/db</li>
+            </ul>
+        </div>
+        <script>
+            const API_URL = "http://localhost:8000/latest";
+            const POLL_INTERVAL = 100;
+
+            // ---------- STATE ----------
+            const svg = document.getElementById("svg");
+            const empty = document.getElementById("empty");
+            const stepVal = document.getElementById("stepVal");
+            const pollVal = document.getElementById("pollVal");
+            const statusChip = document.getElementById("status");
+            const pauseBtn = document.getElementById("pauseBtn");
+            const modeValuesBtn = document.getElementById("modeValues");
+            const modeGradsBtn = document.getElementById("modeGrads");
+
+            let lastStep = null;
+            let paused = false;
+            let mode = "values"; // 'values' | 'grads'
+
+            pollVal.textContent = `${POLL_INTERVAL}ms`;
+
+            async function fetchSnapshot() {
+                try {
+                    const res = await fetch(API_URL + "?_t=" + Date.now(), { cache: "no-store" });
+                    if (!res.ok) throw new Error("HTTP " + res.status);
+
+                    const data = await res.json();
+
+                    return { steps: data.steps, ts: data.timestamp, snapshot: data.snapshot };
+                } catch (error) {
+                    console.error("Error fetching snapshot:", error);
+                    return null;
+                }
+            }
+
+            function clearSVG() {
+                while (svg.firstChild) svg.removeChild(svg.firstChild);
+            }
+
+            function add(tag, attrs = {}, parent = svg) {
+                const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+
+                for (const [k, v] of Object.entries(attrs)) element.setAttribute(k, v);
+
+                parent.appendChild(element);
+                return element;
+            }
+
+            function format(x) {
+                const n = Number(x);
+                if (!Number.isFinite(n)) return "—";
+                return Math.abs(n) >= 1000 ? n.toExponential(2) : n.toFixed(3);
+            }
+
+            function clamp01(x) {
+                return Math.max(0, Math.min(1, x));
+            }
+
+            // Edge width encoding
+            function widthForMagnitude(val, min = 0.5, max = 8, cap = 3) {
+                const a = Math.min(Math.abs(Number(val) || 0), cap) / cap;
+                return (min + a * (max - min)).toFixed(2);
+            }
+
+            // Node color for activation
+            function colorForActivation(a) {
+                const x = Math.max(-1, Math.min(1, Number(a)));
+                const hue = x < 0 ? 210 : 10; // blue vs red
+                const sat = Math.min(70, 20 + Math.abs(x) * 60);
+                const light = 90 - Math.abs(x) * 40;
+                return `hsl(${hue} ${sat}% ${light}%)`;
+            }
+            // Node color for gradient magnitude (neutral hue, value by |g|)
+            function colorForGradient(g) {
+                const a = Math.min(Math.abs(Number(g) || 0), 1.0);
+                const light = 95 - a * 55; // stronger gradient → darker fill
+                return `hsl(48 90% ${light}%)`; // yellowish
+            }
+
+            // Bias ring
+            function ringWidth(b, min = 1, max = 6, cap = 2.5) {
+                const a = Math.min(Math.abs(Number(b) || 0), cap) / cap;
+                return (min + a * (max - min)).toFixed(1);
+            }
+
+            // ---------- DRAW ----------
+
+            // ---------- LOOP ----------
+
+            // ---------- UI wiring ----------
+            // function setStatus(text, kind) {
+            //     statusChip.textContent = `● ${text}`;
+            //     statusChip.classList.remove("ok", "warn", "err");
+            //     statusChip.classList.add(kind);
+            // }
+
+            pauseBtn.addEventListener("click", () => {
+                paused = !paused;
+                pauseBtn.textContent = paused ? "▶ Resume" : "⏸ Pause";
+                if (!paused) tick();
+            });
+
+            modeValuesBtn.addEventListener("click", () => {
+                mode = "values";
+                drawLastOnce();
+            });
+            modeGradsBtn.addEventListener("click", () => {
+                mode = "grads";
+                drawLastOnce();
+            });
+
+            // Keyboard shortcuts: Space = pause, G = grads toggle
+            window.addEventListener("keydown", (e) => {
+                if (e.code === "Space") {
+                    e.preventDefault();
+                    pauseBtn.click();
+                }
+                if (e.key === "g" || e.key === "G") {
+                    mode = mode === "values" ? "grads" : "values";
+                    drawLastOnce();
+                }
+            });
+
+            // Redraw using last fetched snapshot if available
+            let _lastSnapshot = null;
+            const _origDraw = draw;
+            draw = function (snap) {
+                _lastSnapshot = snap;
+                _origDraw(snap);
+            };
+            function drawLastOnce() {
+                if (_lastSnapshot) _origDraw(_lastSnapshot);
+            }
+
+            function draw(snapshot) {
+                clearSVG();
+
+                const layers = snapshot.layers || [];
+                if (!layers.length) return;
+
+                const Width = 1000,
+                    Height = 500;
+                const paddingLeft = 120,
+                    paddingRight = 80,
+                    paddingTop = 80,
+                    paddingBottom = 80;
+                const usableWidth = Width - paddingLeft - paddingRight;
+                const usableHeight = Height - paddingTop - paddingBottom;
+
+                const positions = {};
+                layers.forEach((layer, li) => {
+                    const xGap = layers.length > 1 ? usableWidth / (layers.length - 1) : 0;
+                    const yGap = layer.neurons.length > 1 ? usableHeight / (layer.neurons.length - 1) : 0;
+
+                    add("text", { x: paddingLeft + li * xGap, y: 28, class: "layerLabel" }).textContent = `${
+                        layer.layer
+                    } (${layer.neurons[0]?.weights?.length ?? 0}→${layer.neurons.length})`;
+
+                    for (let neuronIndex = 0; neuronIndex < layer.neurons.length; neuronIndex++) {
+                        positions[`${layer.layer}/N${neuronIndex}`] = {
+                            x: paddingLeft + li * xGap,
+                            y: paddingTop + (layer.neurons.length === 1 ? usableHeight / 2 : neuronIndex * yGap),
+                        };
+                    }
+                });
+
+                for (let layerIndex = 0; layerIndex < layers.length - 1; layerIndex++) {
+                    const source = layers[layerIndex],
+                        destination = layers[layerIndex + 1];
+
+                    for (let j = 0; j < destination.neurons.length; j++) {
+                        const weightsArr = destination.neurons[j].weights || [];
+
+                        for (let i = 0; i < weightsArr.length; i++) {
+                            const val = Number(weightsArr[i]) || 0;
+                            const a = positions[`${source.layer}/N${i}`];
+                            const b = positions[`${destination.layer}/N${j}`];
+
+                            if (!a || !b) continue;
+
+                            const line = add("line", {
+                                x1: a.x,
+                                y1: a.y,
+                                x2: b.x,
+                                y2: b.y,
+                                class: "edge",
+                                "stroke-width": widthForMagnitude(val),
+                                "stroke-dasharray": val < 0 ? "6 4" : "0",
+                            });
+
+                            const title = add("title", {}, line);
+                            title.textContent = `${mode === "grads" ? "dW" : "w"}=${format(val)}  (${
+                                val < 0 ? "neg" : "positions"
+                            })`;
+                        }
+                    }
+                }
+
+                layers.forEach((layer) => {
+                    const radius = 24;
+
+                    layer.neurons.forEach((neuron, neuronIndex) => {
+                        const position = positions[`${layer.layer}/N${neuronIndex}`];
+                        if (!position) return;
+
+                        const activation = Number(neuron.activation ?? neuron.activation ?? NaN);
+                        const bias = Number(neuron.bias);
+
+                        const node = add("circle", { cx: position.x, cy: position.y, r: radius, class: "node" });
+                        node.setAttribute("fill", colorForActivation(Number.isFinite(activation) ? activation : 0));
+
+                        const ring = add("circle", {
+                            cx: position.x,
+                            cy: position.y,
+                            r: radius + 3,
+                            fill: "none",
+                            stroke: "#6a90d6",
+                            "stroke-width": ringWidth(bias),
+                            "stroke-dasharray": Number(bias) < 0 ? "5 3" : "0",
+                            "stroke-opacity": 0.7,
+                        });
+
+                        const text = add("text", { x: position.x, y: position.y, class: "nodeText" });
+                        text.textContent = format(activation);
+
+                        if (Number.isFinite(bias))
+                            add("text", {
+                                x: position.x,
+                                y: position.y + radius + 14,
+                                class: "biasText",
+                            }).textContent = `b=${format(bias)}`;
+                    });
+                });
+            }
+
+            async function tick() {
+                const data = await fetchSnapshot();
+
+                // if (!data) {
+                //     setStatus("Disconnected", "err");
+                //     return;
+                // }
+                // setStatus("Connected", "ok");
+
+                // empty.style.display = "none";
+
+                // if (data.step !== null) {
+                //     if (lastStep === null || data.step !== lastStep) {
+                //         stepVal.textContent = data.step;
+                //         lastStep = data.step;
+                //         draw(data.snapshot);
+                //     }
+                // } else {
+                // }
+                draw(data.snapshot);
+            }
+
+            function loop() {
+                tick().finally(() => setTimeout(loop, POLL_INTERVAL));
+            }
+
+            loop();
+        </script>
+    </body>
+</html>
