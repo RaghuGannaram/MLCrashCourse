@@ -34,9 +34,9 @@
                 stroke-opacity: 0.9;
             }
             .node {
-                fill: #d5e3ff;
-                stroke: var(--node-stroke);
-                stroke-width: 1.5;
+                /* fill: #d5e3ff; */
+                /* stroke: var(--node-stroke); */
+                /* stroke-width: 1.5; */
             }
             .nodeText {
                 fill: var(--fg);
@@ -135,41 +135,45 @@
             .legend-container li {
                 margin: 4px 0;
             }
-
-            .empty-container {
-                position: fixed;
-                inset: 0;
-                display: grid;
-                place-items: center;
-                color: #2b3a55;
-                opacity: 0.7;
-            }
         </style>
     </head>
     <body>
         <!-- Controls -->
         <div class="control-container" aria-live="polite">
-            <div class="group">
-                <div class="chip" id="modeChip" title="Switch between Values and Gradients view">
-                    <strong>Mode</strong>
-                    <span class="sep"></span>
-                    <button id="modeValues">Values</button>
-                    <button id="modeGrads">Gradients</button>
-                </div>
-                <div class="chip" id="stepChip">
-                    <strong>Step</strong><span class="sep"></span><span id="stepVal">—</span>
-                </div>
-                <div class="chip" id="pollChip" title="Polling interval">
-                    <strong>Poll</strong><span class="sep"></span><span id="pollVal">500ms</span>
-                </div>
-                <div class="chip" id="pauseChip">
-                    <button id="pauseBtn" title="Pause/Resume polling">⏸ Pause</button>
-                </div>
+        <div class="group">
+            <div class="chip" id="modeChip" title="Switch between Values and Gradients view">
+                <strong>Mode</strong><span class="sep"></span>
+                <button id="modeValues">Values</button>
+                <button id="modeGrads">Gradients</button>
             </div>
-            <div class="group" style="margin-left: auto">
-                <div class="chip status ok" id="status">● Connected</div>
+            
+            <div class="chip" id="modelChip" title="Model size (includes Input layer)">
+                <strong>Model</strong><span class="sep"></span>
+                <span id="layersVal">L=0</span>
+                <span style="margin:0 4px;">·</span>
+                <span id="neuronsVal">N=0</span>
+                <span style="margin:0 4px;">·</span>
+                <span id="weightsVal">W=0</span>
+            </div>
+
+            <div class="chip" id="stepChip">
+                <strong>Step</strong><span class="sep"></span><span id="stepVal">—</span>
+            </div>
+
+            <div class="chip" id="timeChip" title="Snapshot timestamp">
+                <strong>Time</strong><span class="sep"></span><span id="timeStampVal">—</span>
+            </div>
+
+            <div class="chip" id="pollChip" title="Polling interval">
+                <strong>Poll</strong><span class="sep"></span><span id="pollVal">500ms</span>
             </div>
         </div>
+
+        <div class="group" style="margin-left: auto">
+            <div class="chip status ok" id="status">● Connected</div>
+        </div>
+        </div>
+
 
         <!-- Canvas -->
         <div class="canvas-container">
@@ -181,9 +185,6 @@
                 aria-label="Neural network live viewer"
             ></svg>
         </div>
-
-        <!-- Empty state -->
-        <!-- <div class="empty-container" id="empty">Waiting for snapshot…</div> -->
 
         <!-- Legend -->
         <div class="legend-container" id="legend">
@@ -201,17 +202,15 @@
 
             // ---------- STATE ----------
             const svg = document.getElementById("svg");
-            const empty = document.getElementById("empty");
-            const stepVal = document.getElementById("stepVal");
-            const pollVal = document.getElementById("pollVal");
-            const statusChip = document.getElementById("status");
-            const pauseBtn = document.getElementById("pauseBtn");
             const modeValuesBtn = document.getElementById("modeValues");
             const modeGradsBtn = document.getElementById("modeGrads");
-
-            let lastStep = null;
-            let paused = false;
-            let mode = "values"; // 'values' | 'grads'
+            const layersVal = document.getElementById("layersVal");
+            const neuronsVal = document.getElementById("neuronsVal");
+            const weightsVal = document.getElementById("weightsVal");
+            const stepVal = document.getElementById("stepVal");
+            const timeStampVal = document.getElementById("timeStampVal");
+            const pollVal = document.getElementById("pollVal");
+            const statusChip = document.getElementById("status");
 
             pollVal.textContent = `${POLL_INTERVAL}ms`;
 
@@ -222,7 +221,7 @@
 
                     const data = await res.json();
 
-                    return { steps: data.steps, ts: data.timestamp, snapshot: data.snapshot };
+                    return data;
                 } catch (error) {
                     console.error("Error fetching snapshot:", error);
                     return null;
@@ -242,97 +241,77 @@
                 return element;
             }
 
-            function format(x) {
+            function formatNumber(x) {
                 const n = Number(x);
                 if (!Number.isFinite(n)) return "—";
-                return Math.abs(n) >= 1000 ? n.toExponential(2) : n.toFixed(3);
+
+                return Math.abs(n) >= 1000 ? n.toExponential(2) : n.toFixed(4);
             }
 
-            function clamp01(x) {
-                return Math.max(0, Math.min(1, x));
-            }
-
-            // Edge width encoding
-            function widthForMagnitude(val, min = 0.5, max = 8, cap = 3) {
+            function getWidthByMagnitude(val, min = 0.5, max = 8, cap = 3) {
                 const a = Math.min(Math.abs(Number(val) || 0), cap) / cap;
+
                 return (min + a * (max - min)).toFixed(2);
             }
 
-            // Node color for activation
-            function colorForActivation(a) {
-                const x = Math.max(-1, Math.min(1, Number(a)));
-                const hue = x < 0 ? 210 : 10; // blue vs red
-                const sat = Math.min(70, 20 + Math.abs(x) * 60);
-                const light = 90 - Math.abs(x) * 40;
+            function getActivationColor(a, opts = {}) {
+                const {
+                    cap = 5.0, // value where the ramp "tops out" (tune per model)
+                    negHue = 18, // orange-red for positives
+                    posHue = 210, // blue for negatives (fallback)
+                    minSat = 20, // % saturation at 0
+                    maxSat = 80, // % saturation at cap
+                    minLight = 40, // % lightness at cap
+                    maxLight = 95, // % lightness at 0
+                    gamma = 0.9, // <1 boosts contrast near 0, >1 compresses
+                    useLog = true, // log scale for wide ranges
+                } = opts;
+
+                const x = Number(a);
+                if (!Number.isFinite(x)) return `hsl(${posHue} 0% 90%)`;
+
+                const sign = x < 0 ? -1 : x > 0 ? 1 : 0;
+                const mag = Math.abs(x);
+
+                // Scale 0..cap → 0..1, with optional log for better resolution near 0
+                const scaled = useLog ? Math.log1p(Math.min(mag, cap)) / Math.log1p(cap) : Math.min(mag / cap, 1);
+
+                const t = Math.pow(scaled, gamma); // ease curve
+
+                const hue = sign < 0 ? negHue : posHue;
+                const sat = minSat + (maxSat - minSat) * (sign === 0 ? 0 : t);
+                const light = maxLight - (maxLight - minLight) * (sign === 0 ? 0 : t);
+
                 return `hsl(${hue} ${sat}% ${light}%)`;
             }
-            // Node color for gradient magnitude (neutral hue, value by |g|)
-            function colorForGradient(g) {
-                const a = Math.min(Math.abs(Number(g) || 0), 1.0);
-                const light = 95 - a * 55; // stronger gradient → darker fill
-                return `hsl(48 90% ${light}%)`; // yellowish
-            }
 
-            // Bias ring
-            function ringWidth(b, min = 1, max = 6, cap = 2.5) {
+            function getRingWidthByMagnitude(b, min = 1, max = 6, cap = 2.5) {
                 const a = Math.min(Math.abs(Number(b) || 0), cap) / cap;
+
                 return (min + a * (max - min)).toFixed(1);
-            }
-
-            // ---------- DRAW ----------
-
-            // ---------- LOOP ----------
-
-            // ---------- UI wiring ----------
-            // function setStatus(text, kind) {
-            //     statusChip.textContent = `● ${text}`;
-            //     statusChip.classList.remove("ok", "warn", "err");
-            //     statusChip.classList.add(kind);
-            // }
-
-            pauseBtn.addEventListener("click", () => {
-                paused = !paused;
-                pauseBtn.textContent = paused ? "▶ Resume" : "⏸ Pause";
-                if (!paused) tick();
-            });
-
-            modeValuesBtn.addEventListener("click", () => {
-                mode = "values";
-                drawLastOnce();
-            });
-            modeGradsBtn.addEventListener("click", () => {
-                mode = "grads";
-                drawLastOnce();
-            });
-
-            // Keyboard shortcuts: Space = pause, G = grads toggle
-            window.addEventListener("keydown", (e) => {
-                if (e.code === "Space") {
-                    e.preventDefault();
-                    pauseBtn.click();
-                }
-                if (e.key === "g" || e.key === "G") {
-                    mode = mode === "values" ? "grads" : "values";
-                    drawLastOnce();
-                }
-            });
-
-            // Redraw using last fetched snapshot if available
-            let _lastSnapshot = null;
-            const _origDraw = draw;
-            draw = function (snap) {
-                _lastSnapshot = snap;
-                _origDraw(snap);
-            };
-            function drawLastOnce() {
-                if (_lastSnapshot) _origDraw(_lastSnapshot);
             }
 
             function draw(snapshot) {
                 clearSVG();
 
-                const layers = snapshot.layers || [];
-                if (!layers.length) return;
+                function makeInputLayer(snapshot, baseLayers) {
+                    const rawX = snapshot.input ?? snapshot.x ?? snapshot.features ?? null;
+                    const inferredSize = baseLayers[0]?.neurons?.[0]?.weights?.length ?? 0;
+
+                    const inputSize = rawX ? rawX.length : inferredSize;
+                    const neurons = Array.from({ length: inputSize }, (_, i) => ({
+                        isInput: true,
+                        activation: null,
+                    }));
+
+                    return { layer: "input", neurons };
+                }
+
+                const baseLayers = snapshot.layers || [];
+                if (!baseLayers.length) return;
+
+                const inputLayer = makeInputLayer(snapshot, baseLayers);
+                const layers = [inputLayer, ...baseLayers];
 
                 const Width = 1000,
                     Height = 500;
@@ -344,13 +323,20 @@
                 const usableHeight = Height - paddingTop - paddingBottom;
 
                 const positions = {};
+
                 layers.forEach((layer, li) => {
                     const xGap = layers.length > 1 ? usableWidth / (layers.length - 1) : 0;
                     const yGap = layer.neurons.length > 1 ? usableHeight / (layer.neurons.length - 1) : 0;
 
-                    add("text", { x: paddingLeft + li * xGap, y: 28, class: "layerLabel" }).textContent = `${
-                        layer.layer
-                    } (${layer.neurons[0]?.weights?.length ?? 0}→${layer.neurons.length})`;
+                    add("text", { x: paddingLeft + li * xGap, y: 28, class: "layerLabel" }).textContent = (() => {
+                        if (layer.layer === "input") {
+                            return `input (${layer.neurons.length})`;
+                        }
+                        const fanIn = layer.neurons[0]?.weights?.length ?? 0;
+                        const fanOut = layer.neurons.length;
+
+                        return `${layer.layer} (${fanIn}→${fanOut})`;
+                    })();
 
                     for (let neuronIndex = 0; neuronIndex < layer.neurons.length; neuronIndex++) {
                         positions[`${layer.layer}/N${neuronIndex}`] = {
@@ -380,14 +366,26 @@
                                 x2: b.x,
                                 y2: b.y,
                                 class: "edge",
-                                "stroke-width": widthForMagnitude(val),
+                                "stroke-width": getWidthByMagnitude(val),
                                 "stroke-dasharray": val < 0 ? "6 4" : "0",
                             });
 
-                            const title = add("title", {}, line);
-                            title.textContent = `${mode === "grads" ? "dW" : "w"}=${format(val)}  (${
-                                val < 0 ? "neg" : "positions"
-                            })`;
+                            // const dx = b.x - a.x, dy = b.y - a.y;
+                            // const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+
+                            // // optional: offset a bit perpendicular to the edge so it's not on top of the line
+                            // const len = Math.hypot(dx, dy) || 1;
+                            // const nx = -dy / len, ny =  dx / len;
+                            // const offset = 8;
+
+                            // const edgeText = add("text", {
+                            //     x: mx + nx * offset,
+                            //     y: my + ny * offset,
+                            //     class: "edgeLabel",
+                            //     "font-size": "10",       // or set via CSS
+                            //     fill: "#2b3a55"          // SVG uses 'fill' for text color
+                            // });
+                            // edgeText.textContent = `w=${formatNumber(val)}`;
                         }
                     }
                 }
@@ -403,7 +401,7 @@
                         const bias = Number(neuron.bias);
 
                         const node = add("circle", { cx: position.x, cy: position.y, r: radius, class: "node" });
-                        node.setAttribute("fill", colorForActivation(Number.isFinite(activation) ? activation : 0));
+                        node.setAttribute("fill", getActivationColor(activation));
 
                         const ring = add("circle", {
                             cx: position.x,
@@ -411,20 +409,24 @@
                             r: radius + 3,
                             fill: "none",
                             stroke: "#6a90d6",
-                            "stroke-width": ringWidth(bias),
                             "stroke-dasharray": Number(bias) < 0 ? "5 3" : "0",
                             "stroke-opacity": 0.7,
                         });
+                        ring.setAttribute("stroke-width", getRingWidthByMagnitude(bias));
 
-                        const text = add("text", { x: position.x, y: position.y, class: "nodeText" });
-                        text.textContent = format(activation);
+                        const activationText = add("text", { x: position.x, y: position.y, class: "nodeText" });
+                        activationText.textContent = formatNumber(activation);
 
-                        if (Number.isFinite(bias))
-                            add("text", {
-                                x: position.x,
-                                y: position.y + radius + 14,
-                                class: "biasText",
-                            }).textContent = `b=${format(bias)}`;
+                        const biasText = add("text", { x: position.x, y: position.y + radius + 14, class: "biasText" });
+                        biasText.textContent = `b=${formatNumber(bias)}`;
+
+                        if (layer.layer === "input") {
+                            node.setAttribute("fill", "grey");
+                            node.setAttribute("stroke", "grey");
+                            node.setAttribute("stroke-width", "1.5");
+                            activationText.textContent = `x${neuronIndex + 1}`;
+                            biasText.textContent = "";
+                        }
                     });
                 });
             }
@@ -432,22 +434,17 @@
             async function tick() {
                 const data = await fetchSnapshot();
 
-                // if (!data) {
-                //     setStatus("Disconnected", "err");
-                //     return;
-                // }
-                // setStatus("Connected", "ok");
+                if (!data || !data.snapshot) {
+                    console.warn("No valid snapshot received");
+                    return;
+                }
+                console.log(data)
+                stepVal.textContent = `${data.step}`;
+                timeStampVal.textContent = `${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
+                layersVal.textContent = `L=${data.info.layers}`;
+                neuronsVal.textContent = `N=${data.info.neurons}`;
+                weightsVal.textContent = `W=${data.info.weights}`;
 
-                // empty.style.display = "none";
-
-                // if (data.step !== null) {
-                //     if (lastStep === null || data.step !== lastStep) {
-                //         stepVal.textContent = data.step;
-                //         lastStep = data.step;
-                //         draw(data.snapshot);
-                //     }
-                // } else {
-                // }
                 draw(data.snapshot);
             }
 

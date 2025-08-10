@@ -20,7 +20,7 @@ def read_root():
 
 @app.get("/latest")
 def latest():
-    path = os.path.join("snapshots", "latest.json")
+    path = os.path.join("../snapshots", "latest.json")
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="No snapshot yet")
     with open(path, "r") as f:
