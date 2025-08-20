@@ -7,6 +7,14 @@ pandas~=2.3.1
 matplotlib~=3.10.5
 scikit-learn~=1.7.1
 
+# Use the following command to install PyTorch with CUDA 12.6 support
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# Otherwise, install the following versions
+# torch       @ https://download.pytorch.org/whl/cu126/torch-2.8.0%2Bcu126-cp312-cp312-win_amd64.whl
+# torchvision @ https://download.pytorch.org/whl/cu126/torchvision-0.23.0%2Bcu126-cp312-cp312-win_amd64.whl
+
+
 # Web Frameworks
 fastapi~=0.116.1
 uvicorn~=0.35.0
